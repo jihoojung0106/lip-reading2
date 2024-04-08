@@ -32,15 +32,15 @@ def accum_log(log, new_logs):
 class CustomDataset(Dataset): 
     def __init__(self):
         
-        # self.video_list = glob.glob('/dataset/grid/**/*.mpg', recursive=True)
-        # self.video_list=sorted(self.video_list)
-        # self.align_list = glob.glob('/dataset/grid/alignments/**/*.align',recursive=True)
-        # self.align_list=sorted(self.align_list)
-        
-        self.video_list = glob.glob('/dataset/grid/s1/*.mpg')
+        self.video_list = glob.glob('/dataset/grid/**/*.mpg', recursive=True)
         self.video_list=sorted(self.video_list)
-        self.align_list = glob.glob('/dataset/grid/alignments/s1/*.align')
+        self.align_list = glob.glob('/dataset/grid/alignments/**/*.align',recursive=True)
         self.align_list=sorted(self.align_list)
+        
+        # self.video_list = glob.glob('/dataset/grid/s1/*.mpg')
+        # self.video_list=sorted(self.video_list)
+        # self.align_list = glob.glob('/dataset/grid/alignments/s1/*.align')
+        # self.align_list=sorted(self.align_list)
         
         assert len(self.align_list)==len(self.video_list), f"{len(self.align_list)}, {len(self.video_list)} 둘의 길이가 일치하지 않음."
         
@@ -207,6 +207,22 @@ def load_model(model,load_path):
 
     model.load_state_dict(new_state_dict)
     return model
+
+def calculate_accuracy(test_loader, model, decoder, labels):
+        model.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for data, target in tqdm(test_loader):
+                beam_results, beam_scores, timesteps, out_lens = produce_sample(decoder, model, data)
+                for i in range(len(data)):
+                    decoded = "".join(labels[n] for n in beam_results[i][0][:out_lens[i][0]])
+                    gt_decoded = "".join([labels[x] for x in target[i]])
+                    if decoded == gt_decoded:
+                        correct += 1
+                    total += 1
+        accuracy = correct / total
+        return accuracy
     
 if __name__=="__main__":
     string_="abcdefghijklmnopqrstuvwxyz'?!123456789 "
@@ -221,7 +237,7 @@ if __name__=="__main__":
     test_size = total_size-train_size
     print("train_size",train_size,"test_size",test_size)
     train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
-    train_loader = DataLoader(train_dataset, num_workers=2, batch_size=64, shuffle=True,drop_last=True)
+    train_loader = DataLoader(train_dataset, num_workers=1, batch_size=64, shuffle=True,drop_last=True)
     test_batch_size=4
     test_loader = DataLoader(test_dataset, batch_size=test_batch_size, shuffle=True,drop_last=True)
     
@@ -255,8 +271,9 @@ if __name__=="__main__":
     accelerator.wait_for_everyone()
     test_loader_iter = iter(test_loader)
     accelerator.init_trackers(project_name="simple_lipnet")
+    labels = "abcdefghijklmnopqrstuvwxyz'?!123456789 #"
     decoder = CTCBeamDecoder(
-        labels="abcdefghijklmnopqrstuvwxyz'?!123456789 #",
+        labels=labels,
         model_path=None,
         alpha=0,
         beta=0,
@@ -267,45 +284,44 @@ if __name__=="__main__":
         blank_id=0,
         log_probs_input=True
     )
-    # load_path="/exp_logs/simple-lipnet/s1_9.pth"
-    # load(model,accelerator,load_path,device)
+    load_path="/exp_logs/simple-lipnet/whole_72.pth"
+    load(model,accelerator,load_path,device)
     
     num_epochs=100
-    for epoch in range(0,num_epochs):
-        model.train()
-        total_loss=0
-        num=0
-        for batch_idx, (data, targets) in enumerate(tqdm(train_loader)):
-            with accelerator.accumulate(model):
-            # data, targets = data.to(device), targets.to(device)
-                optimizer.zero_grad()
-                predictions = model(data)
-                loss = compute_ctc_loss(predictions, targets)*100
-                num+=1
-                total_loss=loss.item()
-                accelerator.backward(loss)
-                optimizer.step()
-        accelerator.log({"training_loss": total_loss/len(train_loader)})
-        print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss/len(train_loader)}')
+    # for epoch in range(27,num_epochs):
+    #     model.train()
+    #     total_loss=0
+    #     num=0
+    #     for batch_idx, (data, targets) in enumerate(tqdm(train_loader)):
+    #         with accelerator.accumulate(model):
+    #         # data, targets = data.to(device), targets.to(device)
+    #             optimizer.zero_grad()
+    #             predictions = model(data)
+    #             loss = compute_ctc_loss(predictions, targets)*1000
+    #             num+=1
+    #             total_loss=loss.item()
+    #             accelerator.backward(loss)
+    #             optimizer.step()
+    #     accelerator.log({"training_loss": total_loss/len(train_loader)})
+    #     print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss/len(train_loader)}')
         
-        
-        try:
-            data, target = next(test_loader_iter)
-        except StopIteration:
-            test_loader_iter = iter(test_loader)
-            data, target = next(test_loader_iter)
-        labels="abcdefghijklmnopqrstuvwxyz'?!123456789 #"
-        beam_results, beam_scores, timesteps, out_lens=produce_sample(decoder,model, data)
-        for i in range(test_batch_size):
-            decoded = "".join(labels[n] for n in beam_results[i][0][:out_lens[i][0]])
-            gt_decoded = "".join([labels[x] for x in target[i]])
-            print("prediction : ",decoded,"\tground truth : ", gt_decoded)
-        
+    #     try:
+    #         data, target = next(test_loader_iter)
+    #     except StopIteration:
+    #         test_loader_iter = iter(test_loader)
+    #         data, target = next(test_loader_iter)
+    #     labels="abcdefghijklmnopqrstuvwxyz'?!123456789 #"
+    #     beam_results, beam_scores, timesteps, out_lens=produce_sample(decoder,model, data)
+    #     for i in range(test_batch_size):
+    #         decoded = "".join(labels[n] for n in beam_results[i][0][:out_lens[i][0]])
+    #         gt_decoded = "".join([labels[x] for x in target[i]])
+    #         print("prediction : ",decoded,"\tground truth : ", gt_decoded)
     
-        if (epoch + 1) % 3 == 0:
-            save_path = f'/exp_logs/simple-lipnet/s1_{epoch+1}.pth'
-            save(accelerator,model,save_path,None,None)
+    #     if (epoch + 1) % 3 == 0:
+    #         save_path = f'/exp_logs/simple-lipnet/whole_{epoch+1}.pth'
+    #         save(accelerator,model,save_path,None,None)
             
-            
+    
+    accuracy = calculate_accuracy(test_loader, model, decoder, labels)
+    print(f'Test Accuracy: {accuracy * 100:.2f}%')
     accelerator.end_training()
-    
